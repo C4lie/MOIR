@@ -30,11 +30,23 @@ export default function WeeklyReflection() {
   const fetchInsights = async () => {
     if (!auth.currentUser) return;
     try {
-      // Calculate start of week (Monday)
-      // Actually simply get entries from last 7 days
+      // Calculate start of week (Monday) and end of week (Sunday)
       const now = new Date();
-      const pastWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      const pastWeekStr = pastWeek.toISOString().split('T')[0];
+      const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
+      const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // If Sunday, go back 6 days
+      
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - daysToMonday);
+      startOfWeek.setHours(0, 0, 0, 0);
+      
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6);
+      endOfWeek.setHours(23, 59, 59, 999);
+
+      const startOfWeekStr = startOfWeek.toISOString().split('T')[0];
+      const endOfWeekStr = endOfWeek.toISOString().split('T')[0];
+
+      console.log('📅 Week Range:', { startOfWeekStr, endOfWeekStr, today: now.toISOString().split('T')[0] });
 
       // First, fetch notebooks with weekly summary enabled
       const notebooksRef = collection(db, 'notebooks');
@@ -46,26 +58,37 @@ export default function WeeklyReflection() {
       const notebooksSnapshot = await getDocs(notebooksQuery);
       const weeklyNotebookIds = notebooksSnapshot.docs.map((doc: any) => doc.id);
 
+      console.log('📚 Enabled Notebooks:', weeklyNotebookIds);
+
       // If no notebooks have weekly summary enabled, show message
       if (weeklyNotebookIds.length === 0) {
-        setData({ has_enough_data: false });
+        setData({ 
+          has_enough_data: false,
+          message: "No notebook is enabled for weekly reflection. Go to Notebooks and enable 'Include in Weekly Summary' for one notebook."
+        });
         return;
       }
 
-      // Now fetch entries
+      // Now fetch entries from the enabled notebook(s) within the current week
       const entriesRef = collection(db, 'entries');
       const q = query(
           entriesRef, 
-          where('userId', '==', auth.currentUser.uid)
+          where('userId', '==', auth.currentUser.uid),
+          where('notebookId', 'in', weeklyNotebookIds)
       );
       
       const snapshot = await getDocs(q);
       let entries = snapshot.docs.map((doc: any) => doc.data());
 
-      // Client-side filtering for past week AND notebooks with weekly summary enabled
+      console.log('📝 All entries from enabled notebook:', entries.map((e: any) => ({ date: e.entry_date, title: e.title })));
+
+      // Client-side filtering for current week
       entries = entries.filter((entry: any) => 
-        entry.entry_date >= pastWeekStr && weeklyNotebookIds.includes(entry.notebookId)
+        entry.entry_date >= startOfWeekStr && entry.entry_date <= endOfWeekStr
       );
+      
+      console.log('✅ Entries within current week:', entries.map((e: any) => ({ date: e.entry_date, title: e.title })));
+      console.log('📊 Entry count:', entries.length);
       
       // Client-side sorting
       entries.sort((a: any, b: any) => {
@@ -74,27 +97,84 @@ export default function WeeklyReflection() {
         return 0;
       });
       
-      if (entries.length < 3) {
-           setData({ has_enough_data: false });
+      if (entries.length === 0) {
+           setData({ 
+             has_enough_data: false,
+             message: "No entries found for this week in your enabled notebook. Start writing to see insights!"
+           });
            return;
       }
 
-      // Basic local analysis
+      if (entries.length < 3) {
+           setData({ 
+             has_enough_data: false,
+             message: `You have ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'} this week. Write at least 3 entries to see meaningful insights.`
+           });
+           return;
+      }
+
+      // Real analysis from actual entries
       const entryCount = entries.length;
       
-      // Calculate dominant time (simplified: just grouping by hour if available, roughly)
-      // If we don't have time in entry_date (it's YYYY-MM-DD), use created_at if available or skip
-      // Assuming entry_date is just date. Let's skip time insight or fake it based on created_at if persisted
-      // For now, hardcode or simple random if no real data
-       const dominantTime = "Evening"; // Placeholder or calc from created_at timestamps if valid
+      // Extract keywords from entry content (basic implementation)
+      const allWords = entries
+        .map((e: any) => `${e.title || ''} ${e.content || ''}`)
+        .join(' ')
+        .toLowerCase()
+        .replace(/[^\w\s]/g, '') // Remove punctuation
+        .split(/\s+/)
+        .filter((word: string) => word.length > 4); // Only words longer than 4 chars
 
-      // Basic implementation
+      // Count word frequency
+      const wordFreq: Record<string, number> = {};
+      allWords.forEach((word: string) => {
+        if (!['about', 'would', 'could', 'should', 'think', 'there', 'their', 'these', 'those'].includes(word)) {
+          wordFreq[word] = (wordFreq[word] || 0) + 1;
+        }
+      });
+
+      // Get top 3 keywords
+      const topKeywords = Object.entries(wordFreq)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([word]) => word.charAt(0).toUpperCase() + word.slice(1));
+
+      // Calculate dominant time from created_at timestamps
+      let dominantTime = 'Various times';
+      const timeSlots = { Morning: 0, Afternoon: 0, Evening: 0, Night: 0 };
+      
+      entries.forEach((e: any) => {
+        if (e.created_at && e.created_at.toDate) {
+          const date = e.created_at.toDate();
+          const hour = date.getHours();
+          if (hour >= 5 && hour < 12) timeSlots.Morning++;
+          else if (hour >= 12 && hour < 17) timeSlots.Afternoon++;
+          else if (hour >= 17 && hour < 21) timeSlots.Evening++;
+          else timeSlots.Night++;
+        }
+      });
+
+      const maxSlot = Object.entries(timeSlots).reduce((a, b) => a[1] > b[1] ? a : b);
+      if (maxSlot[1] > 0) {
+        dominantTime = maxSlot[0];
+      }
+
+      // Generate dynamic summary
+      let summaryText = '';
+      if (entryCount >= 5) {
+        summaryText = `You've been very consistent this week with ${entryCount} entries. Your dedication to reflection is impressive!`;
+      } else if (entryCount >= 3) {
+        summaryText = `You've maintained a good writing rhythm this week. Keep it up to discover deeper patterns.`;
+      }
+
+      console.log('🎯 Analysis complete:', { entryCount, topKeywords, dominantTime, summaryText });
+
       setData({
           has_enough_data: true,
-          summary_text: "You've been consistent this week. Keep writing to discover more patterns.",
+          summary_text: summaryText,
           entry_count: entryCount,
           dominant_time: dominantTime,
-          top_keywords: ["Journaling", "Reflection", "Growth"] // Placeholder
+          top_keywords: topKeywords.length > 0 ? topKeywords : undefined
       });
 
     } catch (err) {

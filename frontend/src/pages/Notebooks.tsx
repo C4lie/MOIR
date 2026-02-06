@@ -192,9 +192,16 @@ export default function Notebooks() {
                         <h3 className="text-xl font-serif font-semibold text-sage-900 group-hover:text-sage-700 transition-colors">
                         {notebook.name}
                         </h3>
-                        <span className="text-xs font-medium bg-sage-50 text-sage-600 px-2 py-1 rounded-full">
-                            {notebook.entry_count || 0} entries
-                        </span>
+                        <div className="flex flex-col items-end gap-1">
+                          <span className="text-xs font-medium bg-sage-50 text-sage-600 px-2 py-1 rounded-full">
+                              {notebook.entry_count || 0} entries
+                          </span>
+                          {notebook.include_in_weekly_summary && (
+                            <span className="text-xs font-medium bg-indigo-50 text-indigo-600 px-2 py-1 rounded-full">
+                              📊 Weekly
+                            </span>
+                          )}
+                        </div>
                     </div>
                     
                     <p className="text-sage-600 text-sm mb-6 line-clamp-2 min-h-[2.5rem]">
@@ -323,6 +330,24 @@ function NotebookModal({ notebook, onClose, onSaved }: NotebookModalProps) {
     const uid = auth.currentUser.uid;
 
     try {
+      // If enabling weekly summary on this notebook, disable it on all others
+      if (includeInSummary) {
+        const notebooksRef = collection(db, 'notebooks');
+        const q = query(
+          notebooksRef, 
+          where('userId', '==', uid),
+          where('include_in_weekly_summary', '==', true)
+        );
+        const snapshot = await getDocs(q);
+        
+        // Disable weekly summary on all other notebooks
+        const batch = snapshot.docs
+          .filter((doc: any) => doc.id !== notebook?.id?.toString())
+          .map((doc: any) => updateDoc(doc.ref, { include_in_weekly_summary: false }));
+        
+        await Promise.all(batch);
+      }
+
       if (notebook) {
          // Update
          const notebookRef = doc(db, 'notebooks', notebook.id.toString());
